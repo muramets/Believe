@@ -1,166 +1,164 @@
 import streamlit as st
 import pandas as pd
-import requests
+import plotly.express as px
+from datetime import datetime
 
-# Function to process the CSV data for music revenue analysis
-def process_data(uploaded_file, video_platforms):
-    # Read the CSV file
-    data = pd.read_csv(uploaded_file, delimiter=';')
+# Colors usually associated with the platforms
+color_mapping = {
+    "YouTube UGC": "red",
+    "YouTube Official Content": "red",
+    "Apple Music": "pink",
+    "Spotify": "green",
+    "Amazon Premium": "orange",
+    "Soundcloud": "orange",
+    "YouTube Audio Tier": "red",
+    "TikTok": "pink",
+    "Amazon Prime": "orange",
+    "Pandora": "blue",
+    "Netease": "grey",
+    "UMA (Vkontakte)": "blue",
+    "Facebook / Instagram": "blue",
+    "UMA (BOOM)": "blue",
+    "Yandex": "green"
+}
 
-    # Convert Net Revenue to numeric format
-    data['Net Revenue'] = pd.to_numeric(data['Net Revenue'].str.replace(',', '.'), errors='coerce')
+# Function to format the Quantity values
+def format_quantity(value):
+    if value < 1e3:
+        return f"{value}"
+    elif value < 1e6:
+        return f"{value/1e3:.1f}K ({value:,.0f})"
+    elif value < 1e9:
+        return f"{value/1e6:.1f}M ({value:,.0f})"
+    else:
+        return f"{value/1e9:.1f}B ({value:,.0f})"
 
-    # Filter for specified video platforms only
-    data = data[data['Platform'].isin(video_platforms)]
-
-    # Dictionary to store results
-    platforms_data = {}
-
-    # Sum revenue for each track across all platforms
-    track_total_revenues = data.groupby('Track title')['Net Revenue'].sum()
-
-    for platform in video_platforms:
-        # Filter data for each platform
-        platform_data = data[data['Platform'] == platform]
-
-        # Skip the platform if no data is found
-        if platform_data.empty:
-            continue
-
-        # Calculate total revenue for the platform
-        total_revenue = platform_data['Net Revenue'].sum()
-
-        # Group data by track title and calculate revenue per track, sort by revenue
-        tracks_revenue = platform_data.groupby('Track title')['Net Revenue'].sum().reset_index().sort_values(by='Net Revenue', ascending=False)
-
-        # Reorder columns
-        tracks_revenue = tracks_revenue[['Track title', 'Net Revenue']]
-
-        # Store in dictionary
-        platforms_data[platform] = {'Total Revenue': total_revenue, 'Tracks Revenue': tracks_revenue}
-
-    # Sort platforms by total revenue
-    sorted_platforms_data = dict(sorted(platforms_data.items(), key=lambda item: item[1]['Total Revenue'], reverse=True))
-
-    # Sort tracks by total revenue
-    sorted_tracks = track_total_revenues.sort_values(ascending=False).index.tolist()
-
-    return sorted_platforms_data, sorted_tracks, track_total_revenues
-
-def display_platform_revenues(platforms_data):
-    # Отображение данных по каждой платформе
-    for platform, data in platforms_data.items():
-        st.subheader(f"{platform} - Total Revenue: €{data['Total Revenue']:.2f}")
-        # Отображение таблицы для каждой платформы с доходами по трекам
-        st.dataframe(data['Tracks Revenue'].reset_index(drop=True).rename(columns={'index': 'Rank'}), width=1000)
-
-# Function to convert a number into a human-readable format
-def human_readable_number(number):
-    for unit in ['', 'K', 'M', 'B', 'T']:
-        if abs(number) < 1000.0:
-            return f"{number:3.1f}{unit}"
-        number /= 1000.0
-    return f"{number:.1f}P"
-
-# Ваш API ключ
-api_key = "AIzaSyD2o2ThPSZcfouOCjtNkUrQT0sBKlwnxJk"
-
-# Функция для получения названий каналов с использованием YouTube API
-def fetch_channel_views(df):
-    session = requests.Session()
-    channel_views = {}
-    progress_bar = st.progress(0)
-    video_ids = df['Content'][1:].tolist()  # Пропускаем первую строку с общими данными
-
-    # Разбиваем список ID видео на группы по 50
-    groups_of_video_ids = [video_ids[i:i + 50] for i in range(0, len(video_ids), 50)]
-    for i, group in enumerate(groups_of_video_ids):
-        apiUrl = f"https://www.googleapis.com/youtube/v3/videos?part=snippet&id={','.join(group)}&key={api_key}"
-        response = session.get(apiUrl)
-        if response.status_code == 200:
-            json_response = response.json()
-            for item in json_response.get('items', []):
-                channel_title = item['snippet']['channelTitle']
-                # Получаем индекс видео из исходного списка video_ids
-                video_id = item['id']
-                video_id_index = video_ids.index(video_id) + 1  # +1, так как мы пропустили первую строку в df
-                views = df.at[video_id_index, 'Views']
-                channel_views[channel_title] = channel_views.get(channel_title, 0) + views
-        # Обновляем прогресс бар после обработки каждой группы
-        progress_bar.progress((i + 1) / len(groups_of_video_ids))
-    progress_bar.empty()
-    session.close()
-    return channel_views
-
-# Функция для отображения списка каналов в виде прокручиваемой таблицы
-def display_channels_scrollable_table(channel_views, total_views, selected_track_revenue):
-    channel_data = pd.DataFrame(list(channel_views.items()), columns=['Channel', 'Views'])
-    channel_data['Percentage'] = (channel_data['Views'] / total_views) * 100
-    # Расчет дохода для каждого канала в соответствии с процентом просмотров
-    channel_data['Revenue'] = (channel_data['Percentage'] / 100) * selected_track_revenue
-    channel_data.sort_values(by='Percentage', ascending=False, inplace=True)
-    channel_data.reset_index(drop=True, inplace=True)
-    channel_data.index = channel_data.index + 1
-    channel_data['Views'] = channel_data['Views'].apply(human_readable_number)
-    channel_data['Percentage'] = channel_data['Percentage'].apply(lambda x: f"({x:.2f}%)")
-    st.dataframe(channel_data, width=1000, height=600)    
-
-# Streamlit app combining both functionalities
-def app():
-    st.title('Music Revenue and YouTube Views Analysis')
-
-    video_platforms = [
-        'YouTube Music Premium', 'Youtube Shorts', 'Facebook / Instagram', 'Believe Rights Services (YouTube)',
-        'TikTok', 'YouTube Official Music Content', 'Youtube Audio Tier', 'Youtube Audio Fingerprint'
-    ]
-
-    uploaded_file = st.file_uploader("Choose a Music Revenue CSV file", type="csv")
-    if uploaded_file is not None:
-        platforms_data, sorted_tracks, track_total_revenues = process_data(uploaded_file, video_platforms)
-
-        # Dropdown to select a track should be at the top
-        selected_track = st.selectbox("Select a Track", [''] + sorted_tracks)
-
-        # If a track is selected, show its revenue right after the track selection
-        if selected_track:
-            total_revenue = track_total_revenues[selected_track]
-            st.subheader(f"Revenue for '{selected_track}' across platforms: €{total_revenue:.2f}")
-
-            # Display revenue per platform for the selected track
-            platform_revenues = [(platform, data['Tracks Revenue'][data['Tracks Revenue']['Track title'] == selected_track]['Net Revenue'].sum()) for platform, data in platforms_data.items() if data['Tracks Revenue'][data['Tracks Revenue']['Track title'] == selected_track]['Net Revenue'].sum() > 0]
-            for platform, revenue in sorted(platform_revenues, key=lambda x: x[1], reverse=True):
-                st.write(f"{platform}: €{revenue:.2f}")
-
-            # Checkbox to choose to distribute revenue across projects right after displaying revenue for the selected track
-            if st.checkbox("I want to distribute revenue across projects"):
-                # Создание списка платформ, содержащих "YouTube" в названии, без учета регистра
-                youtube_platforms = [platform for platform in video_platforms if "youtube" in platform.lower()]
-
-                # Установка этих платформ как выбранных по умолчанию в выпадающем списке
-                selected_platforms = st.multiselect("Select platforms for revenue distribution", video_platforms, default=youtube_platforms)
-                # Вычисление дохода от выбранного трека с выбранных платформ
-                selected_track_revenue = sum([data['Tracks Revenue'][data['Tracks Revenue']['Track title'] == selected_track]['Net Revenue'].sum() for platform, data in platforms_data.items() if platform in selected_platforms])
+# Modifying the generate_hover_data function to:
+# 1. Add total revenue from the platform.
+# 2. Sort the platforms based on revenue in descending order.
+def generate_hover_data_modified(row, df):
+    country = row["Country / Region"]
+    country_data = df[df["Country / Region"] == country]
+    
+    platforms_info = country_data[["Platform", "Quantity", "Unit Price", "Net Revenue", "Sales Month"]].values
+    sorted_platforms_info = sorted(platforms_info, key=lambda x: x[3], reverse=True)[:20]  
+    
+    platform_details = []
+    for platform, quantity, unit_price, net_revenue, sales_month in sorted_platforms_info:
+        try:
+            formatted_date = datetime.strptime(sales_month, "%Y/%m/%d").strftime("%B %Y")
+        except ValueError:
+            try:
+                formatted_date = datetime.strptime(sales_month, "%Y-%m-%d").strftime("%B %Y")
+            except ValueError:
+                formatted_date = "Unknown Date"
+        
+        platform_details.append(f"{platform}: {quantity:,} (€{unit_price:.6f} per stream, €{net_revenue:.2f} total). Sales Month: {formatted_date}")
+    
+    return f"€{row['Net Revenue']:.2f}<br>{row['Percentage Revenue']}%<br>{row['Streams']} streams<br><br>" + "<br>".join(platform_details)
 
 
-                # Отображение суммы дохода для распределения
-                st.write(f"Revenue from selected platforms: €{selected_track_revenue:.2f}")
-                
-                # Filter platform revenues based on selected platforms
-                filtered_platform_revenues = {platform: revenue for platform, revenue in platform_revenues if platform in selected_platforms}
 
-                # Upload CSV file for YouTube statistics
-                st.title('YouTube Channel View Analysis')
-                uploaded_file = st.file_uploader("Choose a CSV file", type='csv')
-                if uploaded_file is not None:
-                    df = pd.read_csv(uploaded_file)
-                    total_views = df.at[0, 'Views']  # Extracting the total views from the first row, fourth column
-                    channel_views = fetch_channel_views(df)
-                    selected_track_revenue = sum([data['Tracks Revenue'][data['Tracks Revenue']['Track title'] == selected_track]['Net Revenue'].sum() for platform, data in platforms_data.items()])
-                    display_channels_scrollable_table(channel_views, total_views, selected_track_revenue)
 
-        # Now, display the overall platform revenues and tracks revenue after the track selection
-        display_platform_revenues(platforms_data)
+# Function to display top tracks
+def show_top_tracks(df):
+    # Filter and aggregate data
+    df_filtered = df[df['Client Payment Currency'] == 'EUR']
+    df_grouped = df_filtered.groupby('Release title').agg({'Net Revenue': 'sum'}).reset_index()
+    df_grouped = df_grouped[df_grouped['Net Revenue'] >= 100].sort_values(by='Net Revenue', ascending=False)
+    
+    # Format the Net Revenue column
+    df_grouped['Net Revenue'] = df_grouped['Net Revenue'].apply(lambda x: x)
+    
+    # Display top tracks
+    if df_grouped.empty:
+        st.write("No tracks have earned more than 100 EUR.")
+    else:
+        st.write("## Top Tracks by Earnings")
+        
+        selected_rows = st.multiselect("Select Releases to Calculate Total Revenue:", df_grouped.index.tolist(), format_func=lambda x: f"{df_grouped.loc[x, 'Release title']} (€{df_grouped.loc[x, 'Net Revenue']:.2f})")
+        st.table(df_grouped.rename(columns={'Release title': 'Release Title'}).set_index('Release Title'))
+        
+        # Show total earnings for selected tracks
+        if selected_rows:
+            total_earnings = df_grouped.loc[selected_rows, 'Net Revenue'].sum()
+            st.write(f"### Total Earnings for Selected Tracks: €{total_earnings:.2f}")
 
-# Run the app
-if __name__ == "__main__":
-    app()
+def load_csv_with_auto_delimiter(uploaded_file):
+    """
+    Load a CSV file and automatically determine the delimiter.
+    """
+    # Check the first line of the file to determine the delimiter
+    first_line = uploaded_file.readline().decode('utf-8')
+    if ";" in first_line and "," not in first_line:
+        delimiter = ";"
+    else:
+        delimiter = ","
+    
+    # Reset the pointer to the start of the file
+    uploaded_file.seek(0)
+    
+    # Load the CSV with the determined delimiter
+    df = pd.read_csv(uploaded_file, delimiter=delimiter)
+
+    # Automatically display top tracks table
+    show_top_tracks(df)
+    return df
+
+# Title of the app
+st.title("Analysis of Revenue Distribution")
+
+# Add a file uploader to the app with a unique key
+uploaded_file = st.file_uploader("Choose a CSV file", type="csv", key="unique_file_uploader_key")
+
+# If a file is uploaded
+if uploaded_file is not None:
+    # Use the new function to load the CSV file
+    df = load_csv_with_auto_delimiter(uploaded_file)
+
+    # Add a text input for the release title
+    release_title = st.text_input("Enter the release title")
+
+    # If a release title is entered
+    if release_title:
+        # Filter the dataframe for the release title
+        df_filtered = df[df["Release title"] == release_title]
+        
+        # Calculate total net revenue for the selected release title
+        total_revenue = df_filtered["Net Revenue"].sum()
+        
+        # Display the total net revenue
+        st.write(f"Total Revenue for Track '{release_title}': €{total_revenue:.2f}")
+        
+        # ------------------ Net Revenue by Platform ------------------
+        platform_revenue = df_filtered.groupby(["Platform"]).agg({"Net Revenue": "sum", "Quantity": "sum"}).reset_index()
+        platform_revenue = platform_revenue.sort_values(by="Net Revenue", ascending=False)
+
+        # Calculate total streams for the song and format it
+        total_streams_for_song = df_filtered["Quantity"].sum()
+        total_streams_formatted = format_quantity(total_streams_for_song)
+
+        # Add formatted total streams to hover data
+        platform_revenue["Total Streams"] = total_streams_formatted
+        platform_revenue["Streams"] = platform_revenue["Quantity"].apply(format_quantity)
+
+        fig = px.bar(platform_revenue, x='Net Revenue', y='Platform', orientation='h', color='Platform',
+             color_discrete_map=color_mapping, title=f"Net Revenue by Platform (Total Streams: {total_streams_formatted})",
+             hover_data=['Streams', 'Total Streams'])
+
+        st.plotly_chart(fig)
+
+        
+        # ------------------ Net Revenue by Country ------------------
+        country_data = df_filtered.groupby(["Country / Region"]).agg({"Net Revenue": "sum", "Quantity": "sum"}).reset_index()
+        country_data = country_data.sort_values(by="Net Revenue", ascending=False).head(30)
+        total_net_revenue = country_data["Net Revenue"].sum()
+        country_data["Percentage Revenue"] = ((country_data["Net Revenue"] / total_net_revenue) * 100).round(2)
+        country_data["Streams"] = country_data["Quantity"].apply(format_quantity)
+        country_data["Platform Details"] = country_data.apply(generate_hover_data_modified, df=df_filtered, axis=1)
+
+        fig_country = px.bar(country_data, x='Country / Region', y='Net Revenue', title="Net Revenue by Country",
+                             hover_data=['Streams', 'Percentage Revenue', 'Platform Details'], custom_data=['Platform Details'])
+        fig_country.update_traces(hovertemplate='%{x}<br>%{customdata[0]}')
+        
+        st.plotly_chart(fig_country)
